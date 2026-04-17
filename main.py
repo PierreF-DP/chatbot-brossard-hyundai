@@ -3,6 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import Optional
 import httpx
+import asyncio
 
 app = FastAPI()
 app.add_middleware(
@@ -35,48 +36,58 @@ HEADERS = {
 
 async def roadster_get(path: str, params: dict):
     url = BASE_URL + path
-    try:
-        async with httpx.AsyncClient(
-            headers=HEADERS,
-            follow_redirects=True,
-            timeout=20.0,
-        ) as client:
-            resp = await client.get(url, params=params)
-        if resp.status_code == 403:
-            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-        if resp.status_code == 503:
-            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Delai depasse.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                headers=HEADERS,
+                follow_redirects=True,
+                timeout=20.0,
+            ) as client:
+                resp = await client.get(url, params=params)
+            if resp.status_code == 429:
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                    continue
+                raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
+            if resp.status_code in (403, 503):
+                raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Delai depasse.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
 
 
 async def roadster_post(path: str, payload: dict):
     url = BASE_URL + path
-    try:
-        async with httpx.AsyncClient(
-            headers=HEADERS,
-            follow_redirects=True,
-            timeout=20.0,
-        ) as client:
-            resp = await client.post(url, json=payload)
-        if resp.status_code == 403:
-            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-        if resp.status_code == 503:
-            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-        resp.raise_for_status()
-        return resp.json()
-    except httpx.TimeoutException:
-        raise HTTPException(status_code=504, detail="Delai depasse.")
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=502, detail=str(e))
+    for attempt in range(3):
+        try:
+            async with httpx.AsyncClient(
+                headers=HEADERS,
+                follow_redirects=True,
+                timeout=20.0,
+            ) as client:
+                resp = await client.post(url, json=payload)
+            if resp.status_code == 429:
+                if attempt < 2:
+                    await asyncio.sleep(3)
+                    continue
+                raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
+            if resp.status_code in (403, 503):
+                raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+            resp.raise_for_status()
+            return resp.json()
+        except httpx.TimeoutException:
+            raise HTTPException(status_code=504, detail="Delai depasse.")
+        except HTTPException:
+            raise
+        except Exception as e:
+            raise HTTPException(status_code=502, detail=str(e))
+    raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
 
 
 @app.get("/health")
