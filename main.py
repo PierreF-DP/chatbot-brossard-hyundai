@@ -5,7 +5,6 @@ from typing import Optional
 import httpx
 
 app = FastAPI()
-
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -21,48 +20,63 @@ HEADERS = {
     "Accept-Language": "fr-CA,fr;q=0.9,en;q=0.8",
     "Accept-Encoding": "gzip, deflate, br",
     "Connection": "keep-alive",
+    "Referer": "https://brossard.shop.hyundaicanada.com/",
+    "Origin": "https://brossard.shop.hyundaicanada.com",
+    "sec-ch-ua": '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
     "sec-fetch-dest": "empty",
     "sec-fetch-mode": "cors",
     "sec-fetch-site": "same-origin",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache",
 }
 
 
-async def roadster_get(path, params):
+async def roadster_get(path: str, params: dict):
+    url = BASE_URL + path
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-            r = await client.get(BASE_URL + path, params=params, headers=HEADERS)
-            if r.status_code == 403:
-                raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-            r.raise_for_status()
-            return r.json()
+        async with httpx.AsyncClient(
+            headers=HEADERS,
+            follow_redirects=True,
+            timeout=20.0,
+        ) as client:
+            resp = await client.get(url, params=params)
+        if resp.status_code == 403:
+            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+        if resp.status_code == 503:
+            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+        resp.raise_for_status()
+        return resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Delai depasse.")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail="HTTP " + str(e.response.status_code))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e))
 
 
-async def roadster_post(path, payload):
-    h = dict(HEADERS)
-    h["Content-Type"] = "application/json"
+async def roadster_post(path: str, payload: dict):
+    url = BASE_URL + path
     try:
-        async with httpx.AsyncClient(follow_redirects=True, timeout=30) as client:
-            r = await client.post(BASE_URL + path, json=payload, headers=h)
-            if r.status_code == 403:
-                raise HTTPException(status_code=503, detail="Cloudflare bloque.")
-            r.raise_for_status()
-            return r.json()
+        async with httpx.AsyncClient(
+            headers=HEADERS,
+            follow_redirects=True,
+            timeout=20.0,
+        ) as client:
+            resp = await client.post(url, json=payload)
+        if resp.status_code == 403:
+            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+        if resp.status_code == 503:
+            raise HTTPException(status_code=503, detail="Cloudflare bloque.")
+        resp.raise_for_status()
+        return resp.json()
     except httpx.TimeoutException:
         raise HTTPException(status_code=504, detail="Delai depasse.")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail="HTTP " + str(e.response.status_code))
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @app.get("/health")
@@ -71,76 +85,67 @@ async def health():
 
 
 @app.get("/search_inventory")
-async def search_inventory(submodel=None, year=None, per_page=50):
-    params = {"deal_type": "cash", "request_vehicles": 1, "per_page": per_page}
-    filters = []
+async def search_inventory(
+    submodel: Optional[str] = None,
+    stock: Optional[str] = None,
+    year: Optional[int] = None,
+    trim: Optional[str] = None,
+    color: Optional[str] = None,
+    max_price: Optional[int] = None,
+    limit: int = 5,
+):
+    params = {"per_page": limit}
     if submodel:
-        filters.append("submodel:" + submodel)
+        params["submodel"] = submodel
+    if stock:
+        params["stock"] = stock
     if year:
-        filters.append("year:" + str(year))
-    if filters:
-        params["f"] = filters
+        params["year"] = year
+    if trim:
+        params["trim"] = trim
+    if color:
+        params["color"] = color
+    if max_price:
+        params["max_price"] = max_price
+
     data = await roadster_get("/api/dealer_new_inventory", params)
+
     inventory = data.get("inventory", [])
     results = []
-    for v in inventory:
+    for v in inventory[:limit]:
         results.append({
-            "vin": v.get("vin"),
-            "stock": v.get("stock"),
+            "stock": v.get("stock_number"),
             "year": v.get("year"),
             "make": v.get("make"),
             "model": v.get("model"),
-            "trim": v.get("trim"),
             "submodel": v.get("submodel"),
-            "exterior_color": v.get("exterior_color"),
+            "trim": v.get("trim"),
+            "color": v.get("color"),
             "msrp": v.get("msrp"),
-            "price": v.get("price"),
-            "mileage": v.get("mileage"),
+            "selling_price": v.get("selling_price"),
+            "vin": v.get("vin"),
         })
-    return {"total": data.get("total", len(results)), "vehicles": results}
+    return {"count": len(results), "vehicles": results}
 
 
 class PaymentRequest(BaseModel):
-    vin: Optional[str] = None
-    stock: Optional[str] = None
-    price: Optional[float] = None
-    down_payment: float = 0
-    term_months: int = 84
-    deal_type: str = "finance"
+    stock_number: str
+    down_payment: Optional[int] = 0
+    trade_value: Optional[int] = 0
+    months: Optional[int] = 60
+    km_per_year: Optional[int] = 20000
+    finance_type: Optional[str] = "finance"
 
 
 @app.post("/get_vehicle_payment")
 async def get_vehicle_payment(req: PaymentRequest):
-    if not req.vin and not req.stock:
-        raise HTTPException(status_code=400, detail="VIN ou stock requis.")
-    inv_params = {"deal_type": "cash", "request_vehicles": 1, "per_page": 1}
-    if req.vin:
-        inv_params["vin"] = req.vin
-    elif req.stock:
-        inv_params["stock"] = req.stock
-    inv_data = await roadster_get("/api/dealer_new_inventory", inv_params)
-    vehicles = inv_data.get("inventory", [])
-    if not vehicles:
-        raise HTTPException(status_code=404, detail="Vehicule non trouve.")
-    vehicle = vehicles[0]
-    vin = vehicle.get("vin")
-    price = req.price or vehicle.get("price") or vehicle.get("msrp") or 0
-    payment_payload = {
-        "vin": vin,
-        "price": price,
+    payload = {
+        "stock_number": req.stock_number,
         "down_payment": req.down_payment,
-        "term_months": req.term_months,
-        "deal_type": req.deal_type,
+        "trade_value": req.trade_value,
+        "months": req.months,
+        "km_per_year": req.km_per_year,
+        "finance_type": req.finance_type,
     }
-    payment_data = await roadster_post("/api/calc/payment", payment_payload)
-    return {
-        "vehicle": {
-            "vin": vin,
-            "year": vehicle.get("year"),
-            "make": vehicle.get("make"),
-            "model": vehicle.get("model"),
-            "trim": vehicle.get("trim"),
-            "price": price,
-        },
-        "payment": payment_data,
-    }
+    data = await roadster_post("/api/calc/payment", payload)
+    return data
