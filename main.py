@@ -95,6 +95,22 @@ async def health():
     return {"status": "ok"}
 
 
+@app.get("/debug_raw")
+async def debug_raw(per_page: int = 2):
+    url = BASE_URL + "/api/dealer_new_inventory"
+    async with httpx.AsyncClient(
+        headers=HEADERS,
+        follow_redirects=True,
+        timeout=20.0,
+    ) as client:
+        resp = await client.get(url, params={"per_page": per_page})
+    return {
+        "status_code": resp.status_code,
+        "headers": dict(resp.headers),
+        "body_preview": resp.text[:3000],
+    }
+
+
 @app.get("/search_inventory")
 async def search_inventory(
     submodel: Optional[str] = None,
