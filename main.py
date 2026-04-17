@@ -33,23 +33,46 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
+# Persistent client with cookie jar so Cloudflare cookies are kept between requests
+_client: Optional[httpx.AsyncClient] = None
+
+
+async def get_client() -> httpx.AsyncClient:
+    global _client
+    if _client is None or _client.is_closed:
+        _client = httpx.AsyncClient(
+            headers=HEADERS,
+            follow_redirects=True,
+            timeout=20.0,
+        )
+        # Warm up: GET homepage to obtain Cloudflare cookies
+        try:
+            await _client.get(BASE_URL + "/")
+        except Exception:
+            pass
+    return _client
+
 
 async def roadster_get(path: str, params: dict):
     url = BASE_URL + path
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(
-                headers=HEADERS,
-                follow_redirects=True,
-                timeout=20.0,
-            ) as client:
-                resp = await client.get(url, params=params)
+            client = await get_client()
+            resp = await client.get(url, params=params)
             if resp.status_code == 429:
                 if attempt < 2:
                     await asyncio.sleep(3)
                     continue
                 raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
             if resp.status_code in (403, 503):
+                # Reset client and retry with fresh cookies
+                global _client
+                if _client:
+                    await _client.aclose()
+                _client = None
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
                 raise HTTPException(status_code=503, detail="Cloudflare bloque.")
             resp.raise_for_status()
             return resp.json()
@@ -66,18 +89,21 @@ async def roadster_post(path: str, payload: dict):
     url = BASE_URL + path
     for attempt in range(3):
         try:
-            async with httpx.AsyncClient(
-                headers=HEADERS,
-                follow_redirects=True,
-                timeout=20.0,
-            ) as client:
-                resp = await client.post(url, json=payload)
+            client = await get_client()
+            resp = await client.post(url, json=payload)
             if resp.status_code == 429:
                 if attempt < 2:
                     await asyncio.sleep(3)
                     continue
                 raise HTTPException(status_code=429, detail="Trop de requetes. Reessayez dans quelques secondes.")
             if resp.status_code in (403, 503):
+                global _client
+                if _client:
+                    await _client.aclose()
+                _client = None
+                if attempt < 2:
+                    await asyncio.sleep(2)
+                    continue
                 raise HTTPException(status_code=503, detail="Cloudflare bloque.")
             resp.raise_for_status()
             return resp.json()
@@ -97,16 +123,13 @@ async def health():
 
 @app.get("/debug_raw")
 async def debug_raw(per_page: int = 2):
+    client = await get_client()
     url = BASE_URL + "/api/dealer_new_inventory"
-    async with httpx.AsyncClient(
-        headers=HEADERS,
-        follow_redirects=True,
-        timeout=20.0,
-    ) as client:
-        resp = await client.get(url, params={"per_page": per_page})
+    resp = await client.get(url, params={"per_page": per_page})
+    cookies = {k: v for k, v in client.cookies.items()}
     return {
         "status_code": resp.status_code,
-        "headers": dict(resp.headers),
+        "cookies_held": cookies,
         "body_preview": resp.text[:3000],
     }
 
